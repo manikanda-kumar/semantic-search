@@ -16,9 +16,15 @@ ck-core = { version = "0.7.1", path = "../ck-core" }
 anyhow = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }
+serde_json = { workspace = true }
+once_cell = { workspace = true }
 
 fastembed = { workspace = true, optional = true }
+
+# API embedder dependencies
+reqwest = { version = "0.12", features = ["json", "blocking"], optional = true }
 
 [features]
 default = ["fastembed"]
 fastembed = ["dep:fastembed"]
+api = ["dep:reqwest"]

@@ -25,7 +25,7 @@ ck-core = { version = "0.7.1", path = "../ck-core" }
 ck-index = { version = "0.7.1", path = "../ck-index" }
 ck-engine = { version = "0.7.1", path = "../ck-engine" }
 ck-chunk = { version = "0.7.1", path = "../ck-chunk" }
-ck-embed = { version = "0.7.1", path = "../ck-embed" }
+ck-embed = { version = "0.7.1", path = "../ck-embed", features = ["api"] }
 ck-ann = { version = "0.7.1", path = "../ck-ann" }
 ck-models = { version = "0.7.1", path = "../ck-models" }
 ck-tui = { version = "0.7.1", path = "../ck-tui" }

@@ -1,4 +1,6 @@
 use anyhow::Result;
+use once_cell::sync::Lazy;
+use std::sync::Mutex;
 
 #[cfg(feature = "fastembed")]
 use std::path::{Path, PathBuf};
@@ -18,14 +20,90 @@ pub trait Embedder: Send + Sync {
 
 pub type ModelDownloadCallback = Box<dyn Fn(&str) + Send + Sync>;
 
+/// Configuration for API-based embedders
+#[derive(Clone)]
+pub struct ApiConfig {
+    pub endpoint: String,
+    pub api_key: Option<String>,
+    pub model_name: String,
+    pub dimensions: usize,
+}
+
+impl std::fmt::Debug for ApiConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiConfig")
+            .field("endpoint", &self.endpoint)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("model_name", &self.model_name)
+            .field("dimensions", &self.dimensions)
+            .finish()
+    }
+}
+
+static RUNTIME_API_CONFIG: Lazy<Mutex<Option<ApiConfig>>> = Lazy::new(|| Mutex::new(None));
+
+pub fn set_runtime_api_config(config: Option<ApiConfig>) {
+    let mut guard = RUNTIME_API_CONFIG
+        .lock()
+        .expect("runtime API config mutex poisoned");
+    *guard = config;
+}
+
+fn runtime_api_config() -> Option<ApiConfig> {
+    RUNTIME_API_CONFIG
+        .lock()
+        .expect("runtime API config mutex poisoned")
+        .clone()
+}
+
+impl ApiConfig {
+    pub fn new(endpoint: String, model_name: String, dimensions: usize) -> Self {
+        Self {
+            endpoint,
+            api_key: None,
+            model_name,
+            dimensions,
+        }
+    }
+
+    pub fn with_api_key(mut self, api_key: String) -> Self {
+        self.api_key = Some(api_key);
+        self
+    }
+}
+
 pub fn create_embedder(model_name: Option<&str>) -> Result<Box<dyn Embedder>> {
-    create_embedder_with_progress(model_name, None)
+    create_embedder_with_progress(model_name, None, None)
+}
+
+pub fn create_embedder_with_config(api_config: ApiConfig) -> Result<Box<dyn Embedder>> {
+    create_embedder_with_progress(None, None, Some(api_config))
 }
 
 pub fn create_embedder_with_progress(
     model_name: Option<&str>,
     progress_callback: Option<ModelDownloadCallback>,
+    api_config: Option<ApiConfig>,
 ) -> Result<Box<dyn Embedder>> {
+    // Check for API config from parameters or environment variables
+    let api_config = api_config
+        .or_else(runtime_api_config)
+        .or_else(env_api_config);
+
+    // If API config is provided, use API embedder
+    #[cfg(feature = "api")]
+    if let Some(config) = api_config {
+        if let Some(ref callback) = progress_callback {
+            callback(&format!("Using API embedder: {}", config.endpoint));
+        }
+        return Ok(Box::new(ApiEmbedder::new(config)?));
+    }
+
+    #[cfg(not(feature = "api"))]
+    if api_config.is_some() {
+        anyhow::bail!("API embedder feature not enabled. Rebuild with --features api");
+    }
+
     let model = model_name.unwrap_or("BAAI/bge-small-en-v1.5");
 
     #[cfg(feature = "fastembed")]
@@ -43,6 +121,23 @@ pub fn create_embedder_with_progress(
         }
         Ok(Box::new(DummyEmbedder::new_with_model(model)))
     }
+}
+
+fn env_api_config() -> Option<ApiConfig> {
+    std::env::var("CK_EMBEDDING_API").ok().map(|endpoint| {
+        let model = std::env::var("CK_EMBEDDING_MODEL").unwrap_or_else(|_| "default".to_string());
+        let dimensions = std::env::var("CK_EMBEDDING_DIM")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(768);
+        let api_key = std::env::var("CK_EMBEDDING_API_KEY").ok();
+
+        let mut config = ApiConfig::new(endpoint, model, dimensions);
+        if let Some(key) = api_key {
+            config = config.with_api_key(key);
+        }
+        config
+    })
 }
 
 pub struct DummyEmbedder {
@@ -87,6 +182,113 @@ impl Embedder for DummyEmbedder {
 
     fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         Ok(texts.iter().map(|_| vec![0.0; self.dim]).collect())
+    }
+}
+
+#[cfg(feature = "api")]
+pub struct ApiEmbedder {
+    client: reqwest::blocking::Client,
+    config: ApiConfig,
+}
+
+#[cfg(feature = "api")]
+impl ApiEmbedder {
+    pub fn new(config: ApiConfig) -> Result<Self> {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            reqwest::header::HeaderValue::from_static("application/json"),
+        );
+
+        if let Some(ref api_key) = config.api_key {
+            headers.insert(
+                reqwest::header::AUTHORIZATION,
+                reqwest::header::HeaderValue::from_str(&format!("Bearer {}", api_key))?,
+            );
+        }
+
+        let client = reqwest::blocking::Client::builder()
+            .default_headers(headers)
+            .timeout(std::time::Duration::from_secs(120))
+            .build()?;
+
+        Ok(Self { client, config })
+    }
+
+    fn call_api(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let request_body = serde_json::json!({
+            "input": texts,
+            "model": self.config.model_name
+        });
+
+        let response = self
+            .client
+            .post(&self.config.endpoint)
+            .json(&request_body)
+            .send()?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response
+                .text()
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            anyhow::bail!("API request failed with status {}: {}", status, error_text);
+        }
+
+        let response_json: serde_json::Value = response.json()?;
+
+        // Parse OpenAI-compatible response format
+        let data = response_json
+            .get("data")
+            .ok_or_else(|| anyhow::anyhow!("Response missing 'data' field"))?
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("'data' field is not an array"))?;
+
+        let embeddings: Result<Vec<Vec<f32>>> = data
+            .iter()
+            .enumerate()
+            .map(|(i, item)| {
+                let embedding_array = item
+                    .get("embedding")
+                    .ok_or_else(|| anyhow::anyhow!("Item {} missing 'embedding' field", i))?
+                    .as_array()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("'embedding' field in item {} is not an array", i)
+                    })?;
+
+                let embedding: Vec<f32> = embedding_array
+                    .iter()
+                    .map(|v| {
+                        v.as_f64()
+                            .ok_or_else(|| anyhow::anyhow!("Embedding value is not a number"))
+                            .map(|f| f as f32)
+                    })
+                    .collect::<Result<Vec<f32>>>()?;
+
+                Ok(embedding)
+            })
+            .collect();
+
+        embeddings
+    }
+}
+
+#[cfg(feature = "api")]
+impl Embedder for ApiEmbedder {
+    fn id(&self) -> &'static str {
+        "api"
+    }
+
+    fn dim(&self) -> usize {
+        self.config.dimensions
+    }
+
+    fn model_name(&self) -> &str {
+        &self.config.model_name
+    }
+
+    fn embed(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        self.call_api(texts)
     }
 }
 

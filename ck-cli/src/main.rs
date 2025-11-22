@@ -1,8 +1,9 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ck_core::{
     IncludePattern, SearchMode, SearchOptions, get_default_ckignore_content,
     heatmap::{self, HeatmapBucket},
 };
+use ck_embed::ApiConfig;
 use clap::Parser;
 use console::style;
 use owo_colors::{OwoColorize, Rgb};
@@ -331,6 +332,39 @@ struct Cli {
         help = "Embedding model to use for indexing (bge-small, nomic-v1.5, jina-code) [default: bge-small]. Only used with --index."
     )]
     model: Option<String>,
+
+    // API embedder options
+    #[arg(
+        long = "embedding-api",
+        value_name = "URL",
+        help = "Use external embedding API endpoint (OpenAI-compatible, e.g., vLLM server)",
+        conflicts_with = "model"
+    )]
+    embedding_api: Option<String>,
+
+    #[arg(
+        long = "embedding-api-key-file",
+        value_name = "PATH",
+        help = "Read API key from file (safer than CLI flags); contents are trimmed",
+        requires = "embedding_api"
+    )]
+    embedding_api_key_file: Option<PathBuf>,
+
+    #[arg(
+        long = "embedding-model",
+        value_name = "NAME",
+        help = "Model name to request from the API endpoint",
+        requires = "embedding_api"
+    )]
+    embedding_model: Option<String>,
+
+    #[arg(
+        long = "embedding-dim",
+        value_name = "N",
+        help = "Embedding dimensions for API model [default: 768]",
+        requires = "embedding_api"
+    )]
+    embedding_dim: Option<usize>,
 
     // Search-time enhancement options
     #[arg(
@@ -964,6 +998,7 @@ async fn run_mcp_server() -> Result<()> {
 }
 
 async fn run_cli_mode(cli: Cli) -> Result<()> {
+    let runtime_api_config = build_runtime_api_config(&cli)?;
     // Regular CLI mode logging
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -1021,6 +1056,7 @@ async fn run_cli_mode(cli: Cli) -> Result<()> {
             }
         }
 
+        let _api_guard = runtime_api_config.clone().map(RuntimeApiConfigGuard::new);
         run_index_workflow(
             &status,
             &path,
@@ -1044,6 +1080,7 @@ async fn run_cli_mode(cli: Cli) -> Result<()> {
         let registry = ck_models::ModelRegistry::default();
         let (model_alias, model_config) = resolve_model_selection(&registry, cli.model.as_deref())?;
 
+        let _api_guard = runtime_api_config.clone().map(RuntimeApiConfigGuard::new);
         run_index_workflow(
             &status,
             &path,
@@ -1409,6 +1446,69 @@ async fn run_cli_mode(cli: Cli) -> Result<()> {
     }
 
     Ok(())
+}
+
+struct RuntimeApiConfigGuard;
+
+impl RuntimeApiConfigGuard {
+    fn new(config: ApiConfig) -> Self {
+        ck_embed::set_runtime_api_config(Some(config));
+        Self
+    }
+}
+
+impl Drop for RuntimeApiConfigGuard {
+    fn drop(&mut self) {
+        ck_embed::set_runtime_api_config(None);
+    }
+}
+
+fn build_runtime_api_config(cli: &Cli) -> Result<Option<ApiConfig>> {
+    let Some(endpoint) = cli.embedding_api.clone() else {
+        return Ok(None);
+    };
+
+    let model_name = cli
+        .embedding_model
+        .clone()
+        .or_else(|| std::env::var("CK_EMBEDDING_MODEL").ok())
+        .unwrap_or_else(|| "default".to_string());
+
+    let dimensions = cli
+        .embedding_dim
+        .or_else(|| {
+            std::env::var("CK_EMBEDDING_DIM")
+                .ok()
+                .and_then(|s| s.parse().ok())
+        })
+        .unwrap_or(768);
+
+    let mut config = ApiConfig::new(endpoint, model_name, dimensions);
+
+    if let Some(ref key_file) = cli.embedding_api_key_file {
+        let key_contents = std::fs::read_to_string(key_file).with_context(|| {
+            format!(
+                "Failed to read embedding API key file {}",
+                key_file.display()
+            )
+        })?;
+
+        let trimmed = key_contents.trim().to_string();
+        if trimmed.is_empty() {
+            anyhow::bail!(
+                "API key file {} is empty after trimming whitespace",
+                key_file.display()
+            );
+        }
+
+        config = config.with_api_key(trimmed);
+    } else if let Ok(env_key) = std::env::var("CK_EMBEDDING_API_KEY") {
+        if !env_key.trim().is_empty() {
+            config = config.with_api_key(env_key);
+        }
+    }
+
+    Ok(Some(config))
 }
 
 fn build_options(cli: &Cli, reindex: bool, _repo_root: Option<&Path>) -> SearchOptions {

@@ -129,14 +129,38 @@ ck -C 2 "authenticate" .
 Before using semantic or lexical search, create an index:
 
 ```bash
-# Index current directory
-ck index .
+# Index current directory (uses local BGE-small model by default)
+ck --index .
+
+# Index with external API (e.g., vLLM server with Jina embeddings)
+ck --index . \
+  --embedding-api "http://localhost:8000/v1/embeddings" \
+  --embedding-model "jinaai/jina-embeddings-v2-base-en" \
+  --embedding-dim 768
+
+# Store API key in a file (avoids leaking secrets via process list)
+echo "sk-..." > ~/.ck/openai.key
+chmod 600 ~/.ck/openai.key
+ck --index . \
+  --embedding-api "https://api.openai.com/v1/embeddings" \
+  --embedding-api-key-file ~/.ck/openai.key \
+  --embedding-model "text-embedding-3-small" \
+  --embedding-dim 1536
+
+# Or set environment variables for persistent API configuration
+export CK_EMBEDDING_API="http://localhost:8000/v1/embeddings"
+export CK_EMBEDDING_MODEL="jinaai/jina-embeddings-v2-base-en"
+export CK_EMBEDDING_DIM=768
+export CK_EMBEDDING_API_KEY="sk-..."
+ck --index .
+
+# ⚠️ Avoid passing API keys directly via CLI flags; other local users can read your process arguments.
 
 # Check what was indexed
-ck status .
+ck --status .
 
 # Detailed index statistics
-ck status . --verbose
+ck --status . --verbose
 ```
 
 ## 3. Semantic Search - Find Similar Code

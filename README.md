@@ -249,12 +249,41 @@ ck --index --model nomic-v1.5 .
 
 # Code-specialized: Jina Code (optimized for programming languages)
 ck --index --model jina-code .
+
+# External API: Use vLLM, OpenAI-compatible, or other embedding APIs
+ck --index \
+  --embedding-api "http://localhost:8000/v1/embeddings" \
+  --embedding-model "jinaai/jina-embeddings-v2-base-en" \
+  --embedding-dim 768
+
+# With API key stored safely on disk (preferred)
+echo "sk-..." > ~/.ck/openai.key
+chmod 600 ~/.ck/openai.key
+ck --index \
+  --embedding-api "https://api.openai.com/v1/embeddings" \
+  --embedding-api-key-file ~/.ck/openai.key \
+  --embedding-model "text-embedding-3-small" \
+  --embedding-dim 1536
+
+# Or rely on environment variables before running ck
+export CK_EMBEDDING_API_KEY="sk-..."
+ck --index --embedding-api "https://api.openai.com/v1/embeddings" ...
 ```
 
 **Model Comparison:**
-- **`bge-small`** (default): 400-token chunks, fast indexing, good for most code
-- **`nomic-v1.5`**: 1024-token chunks with 8K model capacity, better for large functions
-- **`jina-code`**: 1024-token chunks with 8K model capacity, specialized for code understanding
+- **`bge-small`** (default): 400-token chunks, fast indexing, good for most code, runs locally
+- **`nomic-v1.5`**: 1024-token chunks with 8K model capacity, better for large functions, runs locally
+- **`jina-code`**: 1024-token chunks with 8K model capacity, specialized for code understanding, runs locally
+- **External API**: Any OpenAI-compatible embedding API (vLLM, OpenAI, HuggingFace Inference API, etc.), requires network access
+
+**Why use external APIs?**
+- ✅ Access to latest/proprietary models
+- ✅ No local model storage (saves ~300MB disk space)
+- ✅ GPU acceleration via hosted services
+- ✅ Share embedding infrastructure across tools
+- ❌ Requires network connection
+- ❌ May have API costs
+- ❗ Never pass API keys directly via CLI flags—they are visible to other local users. Use env vars or `--embedding-api-key-file` instead.
 
 ### Index Management
 

@@ -11,6 +11,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  BUNDLE_RUST_TOOLCHAIN: ${{ vars.BUNDLE_RUST_TOOLCHAIN || 'false' }}
 
 jobs:
   create-release:
@@ -57,17 +58,18 @@ jobs:
             target: x86_64-unknown-linux-gnu
             use-cross: false
           
-          
-          # macOS builds
-          - build: macos-x86_64
-            os: macos-latest
-            target: x86_64-apple-darwin
-            use-cross: false
-          
-          - build: macos-aarch64
-            os: macos-latest
-            target: aarch64-apple-darwin
-            use-cross: false
+           
+           # macOS builds
+           - build: macos-x86_64
+             os: macos-latest
+             target: x86_64-apple-darwin
+             use-cross: false
+           
+           - build: macos-aarch64
+             os: macos-latest
+             target: aarch64-apple-darwin
+             use-cross: false
+             bundle_toolchain: true
           
           # Windows builds
           - build: windows-x86_64-msvc
@@ -161,6 +163,23 @@ jobs:
           echo "ARCHIVE_NAME=ck-${version}-${{ matrix.target }}" >> $GITHUB_ENV
         shell: bash
       
+      - name: Bundle Rust toolchain (macOS)
+        if: matrix.os == 'macos-latest' && matrix.bundle_toolchain && env.BUNDLE_RUST_TOOLCHAIN == 'true'
+        run: |
+          SYSROOT=$(rustc --print sysroot)
+          echo "Bundling Rust toolchain from sysroot: $SYSROOT"
+
+          mkdir -p rust-toolchain
+          # Copy the toolchain sysroot, but skip docs and std sources to keep size down
+          rsync -a \
+            --exclude 'lib/rustlib/src' \
+            --exclude 'share' \
+            "$SYSROOT"/ rust-toolchain/
+
+          echo "Bundled toolchain size:"
+          du -sh rust-toolchain/
+        shell: bash
+      
       - name: Create archive (Windows)
         if: matrix.os == 'windows-latest'
         run: |
@@ -177,7 +196,17 @@ jobs:
           mkdir dist
           cp target/${{ matrix.target }}/release/ck dist/
           cp README.md LICENSE-MIT LICENSE-APACHE dist/ 2>/dev/null || true
-          tar czf ${{ env.ARCHIVE_NAME }}.tar.gz -C dist .
+          
+          # Include bundled Rust toolchain for macOS if enabled
+          if [ "${{ matrix.os }}" = "macos-latest" ] && [ "${{ matrix.bundle_toolchain }}" = "true" ] && [ "${{ env.BUNDLE_RUST_TOOLCHAIN }}" = "true" ]; then
+            echo "Including bundled Rust toolchain in release archive"
+            mv rust-toolchain dist/
+            echo "Archive contents:"
+            ls -la dist/
+          fi
+          
+          cd dist
+          zip -r ../${{ env.ARCHIVE_NAME }}.zip *
       
       - name: Generate SHA256
         run: |
@@ -185,9 +214,9 @@ jobs:
             certutil -hashfile ${{ env.ARCHIVE_NAME }}.zip SHA256 > ${{ env.ARCHIVE_NAME }}.zip.sha256
           else
             if [ "${{ matrix.os }}" = "macos-latest" ]; then
-              shasum -a 256 ${{ env.ARCHIVE_NAME }}.tar.gz > ${{ env.ARCHIVE_NAME }}.tar.gz.sha256
+              shasum -a 256 ${{ env.ARCHIVE_NAME }}.zip > ${{ env.ARCHIVE_NAME }}.zip.sha256
             else
-              sha256sum ${{ env.ARCHIVE_NAME }}.tar.gz > ${{ env.ARCHIVE_NAME }}.tar.gz.sha256
+              sha256sum ${{ env.ARCHIVE_NAME }}.zip > ${{ env.ARCHIVE_NAME }}.zip.sha256
             fi
           fi
         shell: bash
@@ -196,11 +225,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            gh release upload "${{ github.ref_name }}" ${{ env.ARCHIVE_NAME }}.zip ${{ env.ARCHIVE_NAME }}.zip.sha256 --clobber
-          else
-            gh release upload "${{ github.ref_name }}" ${{ env.ARCHIVE_NAME }}.tar.gz ${{ env.ARCHIVE_NAME }}.tar.gz.sha256 --clobber
-          fi
+          gh release upload "${{ github.ref_name }}" ${{ env.ARCHIVE_NAME }}.zip ${{ env.ARCHIVE_NAME }}.zip.sha256 --clobber
         shell: bash
 
   publish-crates:

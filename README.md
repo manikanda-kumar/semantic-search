@@ -338,6 +338,39 @@ cd ck
 cargo install --path ck-cli
 ```
 
+### Pre-built Binaries (macOS Apple Silicon)
+
+Download the latest release for macOS Apple Silicon from [GitHub Releases](https://github.com/manikanda-kumar/semantic-search/releases). The Apple Silicon archive includes a bundled Rust toolchain for a fully self-contained installation:
+
+```bash
+# Download and extract (example for Apple Silicon)
+curl -LO https://github.com/manikanda-kumar/semantic-search/releases/latest/download/ck-VERSION-aarch64-apple-darwin.zip
+unzip ck-VERSION-aarch64-apple-darwin.zip -d ck-release
+cd ck-release
+
+# Run ck directly
+./ck --version
+
+# Optional: Add to PATH for global access
+sudo cp ck /usr/local/bin/
+
+# Optional: Use bundled Rust toolchain
+export PATH="$(pwd)/rust-toolchain/bin:$PATH"
+rustc --version  # Uses bundled rustc
+cargo --version  # Uses bundled cargo
+```
+
+**Archive contents:**
+```
+ck-<version>-<target>.zip
+├── ck                    # Main binary
+├── README.md
+├── LICENSE-*
+└── rust-toolchain/       # Bundled Rust toolchain (macOS only)
+    ├── bin/              # rustc, cargo, rustfmt, etc.
+    └── lib/              # Standard library and dependencies
+```
+
 ### Package Managers
 ```bash
 # Currently available:

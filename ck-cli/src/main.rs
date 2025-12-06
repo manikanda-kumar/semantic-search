@@ -1502,10 +1502,10 @@ fn build_runtime_api_config(cli: &Cli) -> Result<Option<ApiConfig>> {
         }
 
         config = config.with_api_key(trimmed);
-    } else if let Ok(env_key) = std::env::var("CK_EMBEDDING_API_KEY") {
-        if !env_key.trim().is_empty() {
-            config = config.with_api_key(env_key);
-        }
+    } else if let Ok(env_key) = std::env::var("CK_EMBEDDING_API_KEY")
+        && !env_key.trim().is_empty()
+    {
+        config = config.with_api_key(env_key);
     }
 
     Ok(Some(config))
